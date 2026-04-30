@@ -1,352 +1,521 @@
+require("dotenv").config();
+
 const {
   Client,
   GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  Events
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle
 } = require("discord.js");
 
-const TOKEN = process.env.TOKEN;
+const Database = require("better-sqlite3");
+const db = new Database("linha-paulista.db");
 
-// IDs
-const CATEGORIA_WHITELIST = "1496029624088662049";
-const CANAL_TRANSCRIPT = "1496155923457118459";
-const CARGO_SEM_WL = "1496029518031224842";
-const CARGO_APROVADO = "1496029516370415658";
-const CARGO_STAFF = "1496123378220929094";
-const CANAL_LOG_APROVACAO = "1499502969962496041";
+db.prepare(`
+CREATE TABLE IF NOT EXISTS registros (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  player_id TEXT NOT NULL,
+  tipo TEXT NOT NULL,
+  motivo TEXT NOT NULL,
+  dias TEXT,
+  provas TEXT,
+  staff TEXT NOT NULL,
+  data TEXT NOT NULL
+)
+`).run();
 
-// URL do seu Worker
-const WORKER_URL = process.env.WORKER_URL || "https://transcripts-whitelist.henrique-brantmoura.workers.dev";
+try {
+  db.prepare("ALTER TABLE registros ADD COLUMN provas TEXT").run();
+} catch (e) {}
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.GuildMembers
   ]
 });
 
-const perguntas = [
-  "O que é RDM e por que ele é proibido no RP?",
-  "Explique o que significa VDM e dê um exemplo.",
-  "O que é combat logging (CL)?",
-  "Conte sua história do RP:",
-  "O que é considerado dark RP?",
-  "O que caracteriza um fail RP?",
-  "O que é metagaming? Cite uma situação onde isso acontece.",
-  "O que significa ter amor à vida dentro do RP?",
-  "Explique o que é cop bait.",
-  "Você presencia um crime, mas viu isso em live/Discord e não dentro do jogo. Como você age?",
-  "Seu personagem sofre um acidente grave. Como você deve agir em relação ao RP?",
-  "Você e seus amigos querem fazer vários roubos seguidos rapidamente. Isso pode? Justifique.",
-  "Você está sendo abordado por 2 policiais armados. O que você faz e por quê?"
-];
+const commands = [
+  new SlashCommandBuilder()
+    .setName("painel")
+    .setDescription("Envia o painel de punições da Linha Paulista RP")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+].map(cmd => cmd.toJSON());
 
-function criarHTMLTranscript(channel, mensagensOrdenadas) {
-  const htmlMsgs = mensagensOrdenadas.map(m => {
-    const avatar = m.author.displayAvatarURL({ extension: "png" });
-    const data = m.createdAt.toLocaleString("pt-BR");
-    const conteudo = (m.content || "[sem texto]")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+async function registrarComandos() {
+  const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
-    return `
-      <div class="msg">
-        <img src="${avatar}" class="avatar">
-        <div class="content">
-          <div>
-            <span class="author">${m.author.tag}</span>
-            ${m.author.bot ? `<span class="bot">BOT</span>` : ""}
-            <span class="date">${data}</span>
-          </div>
-          <div class="text">${conteudo}</div>
-        </div>
-      </div>`;
-  }).join("");
-
-  return `
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8">
-<title>${channel.name}</title>
-<style>
-body {
-  margin: 0;
-  padding: 30px;
-  background: #313338;
-  color: #dbdee1;
-  font-family: Arial, sans-serif;
-}
-.header {
-  display: flex;
-  gap: 15px;
-  margin-bottom: 30px;
-}
-.icon {
-  width: 88px;
-  height: 88px;
-  border-radius: 6px;
-}
-.title {
-  font-size: 28px;
-  color: white;
-  font-weight: bold;
-}
-.subtitle, .count {
-  font-size: 22px;
-  color: white;
-}
-.msg {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 22px;
-}
-.avatar {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-}
-.author {
-  font-weight: bold;
-  color: white;
-}
-.bot {
-  background: #5865f2;
-  color: white;
-  font-size: 11px;
-  padding: 2px 5px;
-  border-radius: 4px;
-  margin-left: 5px;
-}
-.date {
-  color: #949ba4;
-  font-size: 12px;
-  margin-left: 6px;
-}
-.text {
-  margin-top: 5px;
-  white-space: pre-wrap;
-  line-height: 1.4;
-}
-</style>
-</head>
-<body>
-
-<div class="header">
-  <img class="icon" src="${channel.guild.iconURL({ extension: "png" }) || ""}">
-  <div>
-    <div class="title">${channel.guild.name}</div>
-    <div class="subtitle">${channel.name}</div>
-    <div class="count">${mensagensOrdenadas.length} mensagens</div>
-  </div>
-</div>
-
-${htmlMsgs}
-
-</body>
-</html>`;
-}
-
-async function enviarTranscript(channel, membroId = null) {
-  try {
-    const mensagens = await channel.messages.fetch({ limit: 100 });
-    const mensagensOrdenadas = [...mensagens.values()].reverse();
-
-    const html = criarHTMLTranscript(channel, mensagensOrdenadas);
-
-    const resposta = await fetch(WORKER_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ html })
-    });
-
-    const data = await resposta.json();
-    const link = data.url;
-
-    const botao = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setLabel("🌐 Ver Transcript")
-        .setStyle(ButtonStyle.Link)
-        .setURL(link)
-    );
-
-    const canalLogs = channel.guild.channels.cache.get(CANAL_TRANSCRIPT);
-
-    if (canalLogs) {
-      await canalLogs.send({
-        content: `📄 Transcript do ticket: **${channel.name}**`,
-        components: [botao]
-      });
-    }
-
-    if (membroId) {
-      const membro = await channel.guild.members.fetch(membroId).catch(() => null);
-
-      if (membro) {
-        await membro.send({
-          content: `📄 Aqui está o transcript do seu ticket de whitelist: **${channel.name}**`,
-          components: [botao]
-        }).catch(() => {});
-      }
-    }
-
-  } catch (err) {
-    console.error("Erro transcript:", err);
-  }
-}
-
-function fecharTicket(channel, membroId = null, tempo = 5000) {
-  setTimeout(async () => {
-    await enviarTranscript(channel, membroId);
-    await channel.delete().catch(() => {});
-  }, tempo);
-}
-
-client.on("channelCreate", async (channel) => {
-  if (!channel.isTextBased()) return;
-  if (channel.parentId !== CATEGORIA_WHITELIST) return;
-
-  const btn = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("iniciar")
-      .setLabel("📋 Iniciar Whitelist")
-      .setStyle(ButtonStyle.Primary)
+  await rest.put(
+    Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+    { body: commands }
   );
 
-  await channel.send({
-    content: "Clique para iniciar sua whitelist.",
-    components: [btn]
-  });
+  console.log("Comandos registrados.");
+}
+
+function isStaff(interaction) {
+  return interaction.member.roles.cache.has(process.env.STAFF_ROLE_ID);
+}
+
+client.once("clientReady", () => {
+  console.log(`Bot online como ${client.user.tag}`);
 });
 
-client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isButton()) return;
+client.on("interactionCreate", async interaction => {
+  if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === "painel") {
+      await interaction.deferReply();
 
-  const channel = interaction.channel;
-  if (channel.parentId !== CATEGORIA_WHITELIST) return;
-
-  if (interaction.customId === "iniciar") {
-    await interaction.reply("Iniciando...");
-
-    const userId = interaction.user.id;
-    let etapa = 0;
-
-    await channel.send(perguntas[0]);
-
-    const collector = channel.createMessageCollector({
-      filter: m => m.author.id === userId,
-      time: 300000
-    });
-
-    collector.on("collect", async () => {
-      etapa++;
-
-      if (etapa < perguntas.length) {
-        await channel.send(perguntas[etapa]);
-      } else {
-        collector.stop("ok");
-      }
-    });
-
-    collector.on("end", async (_, reason) => {
-      if (reason !== "ok") {
-        await channel.send("⏰ Tempo esgotado. Ticket será fechado.").catch(() => {});
-        fecharTicket(channel, userId);
-        return;
+      if (!isStaff(interaction)) {
+        return interaction.editReply({
+          content: "❌ Você não tem permissão para usar este comando."
+        });
       }
 
-      const staff = new ActionRowBuilder().addComponents(
+      const embed = new EmbedBuilder()
+        .setColor("#ff0000")
+        .setImage("https://cdn.discordapp.com/attachments/1312829269176614922/1499476206326644948/content.png")
+        .setDescription(
+          "**Bem-vindo(a) ao sistema de registros da Linha Paulista RP.**\n\n" +
+          "Utilize os botões abaixo para registrar ou consultar punições de jogadores.\n\n" +
+          "━━━━━━━━━━━━━━━━━━━━━━\n\n" +
+          "📋 **REGISTROS**\n\n" +
+          "📄 **Registrar Advertência**\n" +
+          "Aplica cargos de advertência automaticamente.\n\n" +
+          "🔨 **Registrar Banimento**\n" +
+          "Registra um banimento para o jogador.\n\n" +
+          "📁 **Histórico do Jogador**\n" +
+          "Veja o histórico de punições.\n\n" +
+          "🗑️ **Remover Registro**\n" +
+          "Remove um registro existente.\n\n" +
+          "━━━━━━━━━━━━━━━━━━━━━━\n\n" +
+          "📊 **Estatísticas**"
+        )
+        .setFooter({
+          text: "Sistema de Punições • Linha Paulista RP"
+        });
+
+      const row1 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`aprovar_${userId}`)
-          .setLabel("✅ Aprovar")
-          .setStyle(ButtonStyle.Success),
+          .setCustomId("registrar_adv")
+          .setLabel("Registrar Advertência")
+          .setEmoji("📄")
+          .setStyle(ButtonStyle.Danger),
+
         new ButtonBuilder()
-          .setCustomId(`reprovar_${userId}`)
-          .setLabel("❌ Reprovar")
+          .setCustomId("registrar_ban")
+          .setLabel("Registrar Banimento")
+          .setEmoji("🔨")
           .setStyle(ButtonStyle.Danger)
       );
 
-      await channel.send(`⏳ ${interaction.user}, aguarde um STAFF analisar.`);
-      await channel.send({
-        content: "📋 Painel da Staff:",
-        components: [staff]
+      const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("historico")
+          .setLabel("Histórico do Jogador")
+          .setEmoji("📁")
+          .setStyle(ButtonStyle.Secondary),
+
+        new ButtonBuilder()
+          .setCustomId("remover")
+          .setLabel("Remover Registro")
+          .setEmoji("🗑️")
+          .setStyle(ButtonStyle.Secondary),
+
+        new ButtonBuilder()
+          .setCustomId("estatisticas")
+          .setLabel("Estatísticas")
+          .setEmoji("📊")
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      return interaction.editReply({
+        embeds: [embed],
+        components: [row1, row2]
       });
-    });
+    }
   }
 
-  if (interaction.customId.startsWith("aprovar_")) {
-    if (!interaction.member.roles.cache.has(CARGO_STAFF)) {
-      return interaction.reply({ content: "Sem permissão", ephemeral: true });
+  if (interaction.isButton()) {
+    if (!isStaff(interaction)) {
+      return interaction.reply({
+        content: "❌ Você não tem permissão para usar este botão.",
+        ephemeral: true
+      });
     }
-  
-    const id = interaction.customId.split("_")[1];
-    const membro = await interaction.guild.members.fetch(id).catch(() => null);
-  
-    if (membro) {
-      await membro.roles.add(CARGO_APROVADO).catch(console.error);
-      await membro.roles.remove(CARGO_SEM_WL).catch(console.error);
+
+    if (interaction.customId === "registrar_adv") {
+      const modal = new ModalBuilder()
+        .setCustomId("modal_adv")
+        .setTitle("Registrar Advertência");
+
+      const discordIdInput = new TextInputBuilder()
+        .setCustomId("discord_id")
+        .setLabel("ID do Discord do jogador")
+        .setPlaceholder("Exemplo: 123456789012345678")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const motivoInput = new TextInputBuilder()
+        .setCustomId("motivo")
+        .setLabel("Motivo da advertência")
+        .setPlaceholder("Descreva o motivo da advertência")
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
+
+      const provasInput = new TextInputBuilder()
+        .setCustomId("provas")
+        .setLabel("Clips/Provas")
+        .setPlaceholder("Cole o link do clip ou prova")
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(false);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(discordIdInput),
+        new ActionRowBuilder().addComponents(motivoInput),
+        new ActionRowBuilder().addComponents(provasInput)
+      );
+
+      return interaction.showModal(modal);
     }
-  
-    // 📄 LOG DE APROVAÇÃO
-    const canalLog = interaction.guild.channels.cache.get(CANAL_LOG_APROVACAO);
-  
-    if (canalLog) {
-      await canalLog.send({
+
+    if (interaction.customId === "registrar_ban") {
+      const modal = new ModalBuilder()
+        .setCustomId("modal_ban")
+        .setTitle("Registrar Banimento");
+
+      const discordIdInput = new TextInputBuilder()
+        .setCustomId("discord_id")
+        .setLabel("ID do Discord do jogador")
+        .setPlaceholder("Exemplo: 123456789012345678")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const diasInput = new TextInputBuilder()
+        .setCustomId("dias")
+        .setLabel("Dias de banimento")
+        .setPlaceholder("Coloque 0 para permanente")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const motivoInput = new TextInputBuilder()
+        .setCustomId("motivo")
+        .setLabel("Motivo do banimento")
+        .setPlaceholder("Descreva o motivo do banimento")
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
+
+      const provasInput = new TextInputBuilder()
+        .setCustomId("provas")
+        .setLabel("Clips/Provas")
+        .setPlaceholder("Cole o link do clip ou prova")
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(false);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(discordIdInput),
+        new ActionRowBuilder().addComponents(diasInput),
+        new ActionRowBuilder().addComponents(motivoInput),
+        new ActionRowBuilder().addComponents(provasInput)
+      );
+
+      return interaction.showModal(modal);
+    }
+
+    if (interaction.customId === "historico") {
+      const modal = new ModalBuilder()
+        .setCustomId("modal_historico")
+        .setTitle("Consultar Histórico");
+
+      const discordIdInput = new TextInputBuilder()
+        .setCustomId("discord_id")
+        .setLabel("ID do Discord do jogador")
+        .setPlaceholder("Exemplo: 123456789012345678")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(discordIdInput));
+      return interaction.showModal(modal);
+    }
+
+    if (interaction.customId === "remover") {
+      const modal = new ModalBuilder()
+        .setCustomId("modal_remover")
+        .setTitle("Remover Registro");
+
+      const registroInput = new TextInputBuilder()
+        .setCustomId("registro_id")
+        .setLabel("ID do registro")
+        .setPlaceholder("Exemplo: 5")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(registroInput));
+      return interaction.showModal(modal);
+    }
+
+    if (interaction.customId === "estatisticas") {
+      const total = db.prepare("SELECT COUNT(*) AS total FROM registros").get().total;
+      const advs = db.prepare("SELECT COUNT(*) AS total FROM registros WHERE tipo = ?").get("Advertência").total;
+      const bans = db.prepare("SELECT COUNT(*) AS total FROM registros WHERE tipo = ?").get("Banimento").total;
+
+      return interaction.reply({
         content:
-  `✅ **Whitelist Aprovada**
-  
-  👤 **Usuário:** <@${id}>
-  🆔 **ID:** \`${id}\`
-  
-  🛡️ **Aprovado por:** <@${interaction.user.id}>
-  🆔 **ID Staff:** \`${interaction.user.id}\`
-  
-  🎫 **Ticket:** ${channel.name}
-  
-  📌 Use esse ID para vincular com denúncias`
+          `📊 **Estatísticas — Linha Paulista RP**\n\n` +
+          `📋 Total de registros: **${total}**\n` +
+          `📝 Advertências: **${advs}**\n` +
+          `🔨 Banimentos: **${bans}**`,
+        ephemeral: true
       });
     }
-  
-    // 💬 RESPOSTA BONITA
-    await interaction.reply(
-  `✅ **Whitelist aprovada!**
-  
-  Parabéns <@${id}>!  
-  Você foi aprovado na whitelist da **Linha Paulista RP**.
-  
-  🚀 Seu acesso já foi liberado  
-  🎮 Bom RP!`
-    );
-  
-    fecharTicket(channel, id);
   }
-  
-  if (interaction.customId.startsWith("reprovar_")) {
-    if (!interaction.member.roles.cache.has(CARGO_STAFF)) {
-      return interaction.reply({ content: "Sem permissão", ephemeral: true });
-    }
-  
-    const id = interaction.customId.split("_")[1];
-  
-    await interaction.reply(
-  `❌ **Whitelist reprovada**
-  
-  <@${id}>, você não passou na whitelist desta vez.
-  
-  Tente novamente com mais atenção às regras.`
-    );
-  
-    fecharTicket(channel, id);
-  }
-});
-client.on("clientReady", () => {
-  console.log(`✅ Bot online como ${client.user.tag}`);
-});
 
-client.login(TOKEN);
+  if (interaction.isModalSubmit()) {
+    const data = new Date().toLocaleString("pt-BR");
+
+    if (interaction.customId === "modal_adv") {
+      const discordId = interaction.fields.getTextInputValue("discord_id");
+      const motivo = interaction.fields.getTextInputValue("motivo");
+      const provas = interaction.fields.getTextInputValue("provas") || "Sem provas";
+
+      let member;
+
+      try {
+        member = await interaction.guild.members.fetch(discordId);
+      } catch (error) {
+        return interaction.reply({
+          content: "❌ Não encontrei esse membro no servidor. Confira se o ID do Discord está correto.",
+          ephemeral: true
+        });
+      }
+
+      const adv1 = process.env.ADV_1_ROLE_ID;
+      const adv2 = process.env.ADV_2_ROLE_ID;
+
+      let acao = "";
+
+      try {
+        if (!member.roles.cache.has(adv1) && !member.roles.cache.has(adv2)) {
+          await member.roles.add(adv1);
+          acao = "Primeira advertência aplicada.";
+        } else if (member.roles.cache.has(adv1) && !member.roles.cache.has(adv2)) {
+          await member.roles.remove(adv1);
+          await member.roles.add(adv2);
+          acao = "Segunda advertência aplicada.";
+        } else if (member.roles.cache.has(adv2)) {
+          await member.ban({
+            reason: `Ban automático por 3 advertências. Motivo: ${motivo}`
+          });
+          acao = "Jogador banido automaticamente por atingir 3 advertências.";
+        }
+      } catch (error) {
+        return interaction.reply({
+          content: "❌ Não consegui aplicar cargo/ban. Verifique se o cargo do bot está acima dos cargos de advertência e se ele tem permissão de banir.",
+          ephemeral: true
+        });
+      }
+
+      const result = db.prepare(`
+        INSERT INTO registros (player_id, tipo, motivo, dias, provas, staff, data)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(discordId, "Advertência", motivo, null, provas, interaction.user.tag, data);
+
+      const logEmbed = new EmbedBuilder()
+        .setColor("#ffcc00")
+        .setTitle("📝 Advertência Registrada")
+        .addFields(
+          { name: "Jogador", value: `<@${discordId}>`, inline: true },
+          { name: "Discord ID", value: discordId, inline: true },
+          { name: "Registro", value: `#${result.lastInsertRowid}`, inline: true },
+          { name: "Ação", value: acao },
+          { name: "Staff", value: interaction.user.tag, inline: true },
+          { name: "Motivo", value: motivo },
+          { name: "Clips/Provas", value: provas },
+          { name: "Data", value: data }
+        )
+        .setFooter({ text: "Linha Paulista RP" });
+
+      const canal = client.channels.cache.get(process.env.LOG_CHANNEL_ID);
+      if (canal) canal.send({ embeds: [logEmbed] });
+
+      return interaction.reply({
+        content: `✅ Advertência registrada para <@${discordId}>.\n**Ação:** ${acao}\nRegistro **#${result.lastInsertRowid}**.`,
+        ephemeral: true
+      });
+    }
+
+    if (interaction.customId === "modal_ban") {
+      const discordId = interaction.fields.getTextInputValue("discord_id");
+      const dias = interaction.fields.getTextInputValue("dias");
+      const motivo = interaction.fields.getTextInputValue("motivo");
+      const provas = interaction.fields.getTextInputValue("provas") || "Sem provas";
+
+      let member;
+
+      try {
+        member = await interaction.guild.members.fetch(discordId);
+      } catch (error) {
+        return interaction.reply({
+          content: "❌ Não encontrei esse membro no servidor. Confira se o ID do Discord está correto.",
+          ephemeral: true
+        });
+      }
+
+      const duracao = dias === "0" ? "Permanente" : `${dias} dias`;
+
+      try {
+        await member.ban({
+          reason: `Banimento registrado. Duração: ${duracao}. Motivo: ${motivo}`
+        });
+      } catch (error) {
+        return interaction.reply({
+          content: "❌ Não consegui banir esse membro. Verifique se o cargo do bot está acima do cargo dele e se o bot tem permissão de banir.",
+          ephemeral: true
+        });
+      }
+
+      const result = db.prepare(`
+        INSERT INTO registros (player_id, tipo, motivo, dias, provas, staff, data)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(discordId, "Banimento", motivo, dias, provas, interaction.user.tag, data);
+
+      const logEmbed = new EmbedBuilder()
+        .setColor("#ff0000")
+        .setTitle("🔨 Banimento Registrado")
+        .addFields(
+          { name: "Jogador", value: `<@${discordId}>`, inline: true },
+          { name: "Discord ID", value: discordId, inline: true },
+          { name: "Duração", value: duracao, inline: true },
+          { name: "Registro", value: `#${result.lastInsertRowid}`, inline: true },
+          { name: "Staff", value: interaction.user.tag, inline: true },
+          { name: "Motivo", value: motivo },
+          { name: "Clips/Provas", value: provas },
+          { name: "Data", value: data }
+        )
+        .setFooter({ text: "Linha Paulista RP" });
+
+      const canal = client.channels.cache.get(process.env.LOG_CHANNEL_ID);
+      if (canal) canal.send({ embeds: [logEmbed] });
+
+      return interaction.reply({
+        content: `✅ Banimento registrado para <@${discordId}>. Registro **#${result.lastInsertRowid}**.`,
+        ephemeral: true
+      });
+    }
+
+      if (interaction.customId === "modal_historico") {
+        const discordId = interaction.fields.getTextInputValue("discord_id");
+
+        const registros = db.prepare(`
+          SELECT * FROM registros
+          WHERE player_id = ?
+          ORDER BY id DESC
+          LIMIT 10
+        `).all(discordId);
+
+        if (!registros.length) {
+          return interaction.reply({
+            content: `❌ Nenhum histórico encontrado para <@${discordId}>.`,
+            ephemeral: true
+          });
+        }
+
+      const embed = new EmbedBuilder()
+        .setColor("#ff0000")
+        .setTitle(`📁 Histórico de <@${discordId}>`)
+        .setFooter({ text: "Linha Paulista RP" });
+
+      registros.forEach(r => {
+        embed.addFields({
+          name: `#${r.id} — ${r.tipo}`,
+          value:
+            `**Motivo:** ${r.motivo}\n` +
+            `**Dias:** ${r.dias || "N/A"}\n` +
+            `**Clips/Provas:** ${r.provas || "Sem provas"}\n` +
+            `**Staff:** ${r.staff}\n` +
+            `**Data:** ${r.data}`
+        });
+      });
+
+      return interaction.reply({
+        embeds: [embed],
+        ephemeral: true
+      });
+    }
+
+    if (interaction.customId === "modal_remover") {
+      const registroId = interaction.fields.getTextInputValue("registro_id");
+    
+      const registro = db.prepare(`
+        SELECT * FROM registros
+        WHERE id = ?
+      `).get(registroId);
+    
+      if (!registro) {
+        return interaction.reply({
+          content: "❌ Registro não encontrado.",
+          ephemeral: true
+        });
+      }
+    
+      const result = db.prepare(`
+        DELETE FROM registros
+        WHERE id = ?
+      `).run(registroId);
+    
+      if (registro.tipo === "Advertência") {
+        const discordId = registro.player_id;
+        const adv1 = process.env.ADV_1_ROLE_ID;
+        const adv2 = process.env.ADV_2_ROLE_ID;
+    
+        let member = null;
+    
+        try {
+          member = await interaction.guild.members.fetch(discordId);
+        } catch (error) {
+          member = null;
+        }
+    
+        if (member) {
+          const advsRestantes = db.prepare(`
+            SELECT COUNT(*) AS total FROM registros
+            WHERE player_id = ?
+            AND tipo = ?
+          `).get(discordId, "Advertência").total;
+    
+          try {
+            await member.roles.remove([adv1, adv2]);
+    
+            if (advsRestantes === 1) {
+              await member.roles.add(adv1);
+            }
+    
+            if (advsRestantes >= 2) {
+              await member.roles.add(adv2);
+            }
+          } catch (error) {
+            return interaction.reply({
+              content: "⚠️ Registro removido, mas não consegui atualizar os cargos de advertência. Verifique a hierarquia do cargo do bot.",
+              ephemeral: true
+            });
+          }
+        }
+      }
+    
+      return interaction.reply({
+        content: `✅ Registro **#${registroId}** removido e cargos atualizados.`,
+        ephemeral: true
+      });
+    }
+  }
+});
+registrarComandos();
+client.login(process.env.TOKEN);
