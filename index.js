@@ -37,7 +37,10 @@ try {
 } catch (e) {}
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers
+  ]
 });
 
 const commands = [
@@ -79,14 +82,14 @@ client.on("interactionCreate", async interaction => {
 
       const embed = new EmbedBuilder()
         .setColor("#ff0000")
-        .setImage("https://cdn.discordapp.com/attachments/1312829269176614922/1499476206326644948/content.png?ex=69f4ef8a&is=69f39e0a&hm=98afb48c4da2f41949ed9e60a2e62dc9a9a46dc3a9b2108e4e63549b61ade7de&")
+        .setImage("https://cdn.discordapp.com/attachments/1312829269176614922/1499476206326644948/content.png")
         .setDescription(
           "**Bem-vindo(a) ao sistema de registros da Linha Paulista RP.**\n\n" +
           "Utilize os botões abaixo para registrar ou consultar punições de jogadores.\n\n" +
           "━━━━━━━━━━━━━━━━━━━━━━\n\n" +
           "📋 **REGISTROS**\n\n" +
           "📄 **Registrar Advertência**\n" +
-          "Registra uma advertência para o jogador.\n\n" +
+          "Aplica cargos de advertência automaticamente.\n\n" +
           "🔨 **Registrar Banimento**\n" +
           "Registra um banimento para o jogador.\n\n" +
           "📁 **Histórico do Jogador**\n" +
@@ -94,9 +97,7 @@ client.on("interactionCreate", async interaction => {
           "🗑️ **Remover Registro**\n" +
           "Remove um registro existente.\n\n" +
           "━━━━━━━━━━━━━━━━━━━━━━\n\n" +
-          "⚙️ **OUTRAS OPÇÕES**\n\n" +
-          "📊 **Estatísticas**\n" +
-          "Veja estatísticas do sistema."
+          "📊 **Estatísticas**"
         )
         .setFooter({
           text: "Sistema de Punições • Linha Paulista RP"
@@ -156,10 +157,10 @@ client.on("interactionCreate", async interaction => {
         .setCustomId("modal_adv")
         .setTitle("Registrar Advertência");
 
-      const idInput = new TextInputBuilder()
-        .setCustomId("player_id")
-        .setLabel("ID do jogador")
-        .setPlaceholder("Exemplo: 123")
+      const discordIdInput = new TextInputBuilder()
+        .setCustomId("discord_id")
+        .setLabel("ID do Discord do jogador")
+        .setPlaceholder("Exemplo: 123456789012345678")
         .setStyle(TextInputStyle.Short)
         .setRequired(true);
 
@@ -178,7 +179,7 @@ client.on("interactionCreate", async interaction => {
         .setRequired(false);
 
       modal.addComponents(
-        new ActionRowBuilder().addComponents(idInput),
+        new ActionRowBuilder().addComponents(discordIdInput),
         new ActionRowBuilder().addComponents(motivoInput),
         new ActionRowBuilder().addComponents(provasInput)
       );
@@ -191,10 +192,10 @@ client.on("interactionCreate", async interaction => {
         .setCustomId("modal_ban")
         .setTitle("Registrar Banimento");
 
-      const idInput = new TextInputBuilder()
-        .setCustomId("player_id")
-        .setLabel("ID do jogador")
-        .setPlaceholder("Exemplo: 123")
+      const discordIdInput = new TextInputBuilder()
+        .setCustomId("discord_id")
+        .setLabel("ID do Discord do jogador")
+        .setPlaceholder("Exemplo: 123456789012345678")
         .setStyle(TextInputStyle.Short)
         .setRequired(true);
 
@@ -220,7 +221,7 @@ client.on("interactionCreate", async interaction => {
         .setRequired(false);
 
       modal.addComponents(
-        new ActionRowBuilder().addComponents(idInput),
+        new ActionRowBuilder().addComponents(discordIdInput),
         new ActionRowBuilder().addComponents(diasInput),
         new ActionRowBuilder().addComponents(motivoInput),
         new ActionRowBuilder().addComponents(provasInput)
@@ -234,14 +235,14 @@ client.on("interactionCreate", async interaction => {
         .setCustomId("modal_historico")
         .setTitle("Consultar Histórico");
 
-      const idInput = new TextInputBuilder()
-        .setCustomId("player_id")
-        .setLabel("ID do jogador")
-        .setPlaceholder("Exemplo: 123")
+      const discordIdInput = new TextInputBuilder()
+        .setCustomId("discord_id")
+        .setLabel("ID do Discord do jogador")
+        .setPlaceholder("Exemplo: 123456789012345678")
         .setStyle(TextInputStyle.Short)
         .setRequired(true);
 
-      modal.addComponents(new ActionRowBuilder().addComponents(idInput));
+      modal.addComponents(new ActionRowBuilder().addComponents(discordIdInput));
       return interaction.showModal(modal);
     }
 
@@ -281,21 +282,60 @@ client.on("interactionCreate", async interaction => {
     const data = new Date().toLocaleString("pt-BR");
 
     if (interaction.customId === "modal_adv") {
-      const playerId = interaction.fields.getTextInputValue("player_id");
+      const discordId = interaction.fields.getTextInputValue("discord_id");
       const motivo = interaction.fields.getTextInputValue("motivo");
       const provas = interaction.fields.getTextInputValue("provas") || "Sem provas";
+
+      let member;
+
+      try {
+        member = await interaction.guild.members.fetch(discordId);
+      } catch (error) {
+        return interaction.reply({
+          content: "❌ Não encontrei esse membro no servidor. Confira se o ID do Discord está correto.",
+          ephemeral: true
+        });
+      }
+
+      const adv1 = process.env.ADV_1_ROLE_ID;
+      const adv2 = process.env.ADV_2_ROLE_ID;
+
+      let acao = "";
+
+      try {
+        if (!member.roles.cache.has(adv1) && !member.roles.cache.has(adv2)) {
+          await member.roles.add(adv1);
+          acao = "Primeira advertência aplicada.";
+        } else if (member.roles.cache.has(adv1) && !member.roles.cache.has(adv2)) {
+          await member.roles.remove(adv1);
+          await member.roles.add(adv2);
+          acao = "Segunda advertência aplicada.";
+        } else if (member.roles.cache.has(adv2)) {
+          await member.ban({
+            reason: `Ban automático por 3 advertências. Motivo: ${motivo}`
+          });
+          acao = "Jogador banido automaticamente por atingir 3 advertências.";
+        }
+      } catch (error) {
+        return interaction.reply({
+          content: "❌ Não consegui aplicar cargo/ban. Verifique se o cargo do bot está acima dos cargos de advertência e se ele tem permissão de banir.",
+          ephemeral: true
+        });
+      }
 
       const result = db.prepare(`
         INSERT INTO registros (player_id, tipo, motivo, dias, provas, staff, data)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(playerId, "Advertência", motivo, null, provas, interaction.user.tag, data);
+      `).run(discordId, "Advertência", motivo, null, provas, interaction.user.tag, data);
 
       const logEmbed = new EmbedBuilder()
         .setColor("#ffcc00")
         .setTitle("📝 Advertência Registrada")
         .addFields(
-          { name: "ID do jogador", value: playerId, inline: true },
+          { name: "Jogador", value: `<@${discordId}>`, inline: true },
+          { name: "Discord ID", value: discordId, inline: true },
           { name: "Registro", value: `#${result.lastInsertRowid}`, inline: true },
+          { name: "Ação", value: acao },
           { name: "Staff", value: interaction.user.tag, inline: true },
           { name: "Motivo", value: motivo },
           { name: "Clips/Provas", value: provas },
@@ -307,29 +347,52 @@ client.on("interactionCreate", async interaction => {
       if (canal) canal.send({ embeds: [logEmbed] });
 
       return interaction.reply({
-        content: `✅ Advertência registrada para o ID **${playerId}**. Registro **#${result.lastInsertRowid}**.`,
+        content: `✅ Advertência registrada para <@${discordId}>.\n**Ação:** ${acao}\nRegistro **#${result.lastInsertRowid}**.`,
         ephemeral: true
       });
     }
 
     if (interaction.customId === "modal_ban") {
-      const playerId = interaction.fields.getTextInputValue("player_id");
+      const discordId = interaction.fields.getTextInputValue("discord_id");
       const dias = interaction.fields.getTextInputValue("dias");
       const motivo = interaction.fields.getTextInputValue("motivo");
       const provas = interaction.fields.getTextInputValue("provas") || "Sem provas";
 
+      let member;
+
+      try {
+        member = await interaction.guild.members.fetch(discordId);
+      } catch (error) {
+        return interaction.reply({
+          content: "❌ Não encontrei esse membro no servidor. Confira se o ID do Discord está correto.",
+          ephemeral: true
+        });
+      }
+
+      const duracao = dias === "0" ? "Permanente" : `${dias} dias`;
+
+      try {
+        await member.ban({
+          reason: `Banimento registrado. Duração: ${duracao}. Motivo: ${motivo}`
+        });
+      } catch (error) {
+        return interaction.reply({
+          content: "❌ Não consegui banir esse membro. Verifique se o cargo do bot está acima do cargo dele e se o bot tem permissão de banir.",
+          ephemeral: true
+        });
+      }
+
       const result = db.prepare(`
         INSERT INTO registros (player_id, tipo, motivo, dias, provas, staff, data)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(playerId, "Banimento", motivo, dias, provas, interaction.user.tag, data);
-
-      const duracao = dias === "0" ? "Permanente" : `${dias} dias`;
+      `).run(discordId, "Banimento", motivo, dias, provas, interaction.user.tag, data);
 
       const logEmbed = new EmbedBuilder()
         .setColor("#ff0000")
         .setTitle("🔨 Banimento Registrado")
         .addFields(
-          { name: "ID do jogador", value: playerId, inline: true },
+          { name: "Jogador", value: `<@${discordId}>`, inline: true },
+          { name: "Discord ID", value: discordId, inline: true },
           { name: "Duração", value: duracao, inline: true },
           { name: "Registro", value: `#${result.lastInsertRowid}`, inline: true },
           { name: "Staff", value: interaction.user.tag, inline: true },
@@ -343,31 +406,31 @@ client.on("interactionCreate", async interaction => {
       if (canal) canal.send({ embeds: [logEmbed] });
 
       return interaction.reply({
-        content: `✅ Banimento registrado para o ID **${playerId}**. Registro **#${result.lastInsertRowid}**.`,
+        content: `✅ Banimento registrado para <@${discordId}>. Registro **#${result.lastInsertRowid}**.`,
         ephemeral: true
       });
     }
 
     if (interaction.customId === "modal_historico") {
-      const playerId = interaction.fields.getTextInputValue("player_id");
+      const discordId = interaction.fields.getTextInputValue("discord_id");
 
       const registros = db.prepare(`
         SELECT * FROM registros
         WHERE player_id = ?
         ORDER BY id DESC
         LIMIT 10
-      `).all(playerId);
+      `).all(discordId);
 
       if (!registros.length) {
         return interaction.reply({
-          content: `❌ Nenhum histórico encontrado para o ID **${playerId}**.`,
+          content: `❌ Nenhum histórico encontrado para <@${discordId}>.`,
           ephemeral: true
         });
       }
 
       const embed = new EmbedBuilder()
         .setColor("#ff0000")
-        .setTitle(`📂 Histórico do ID ${playerId}`)
+        .setTitle(`📁 Histórico de <@${discordId}>`)
         .setFooter({ text: "Linha Paulista RP" });
 
       registros.forEach(r => {
