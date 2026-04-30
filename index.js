@@ -411,22 +411,22 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.customId === "modal_historico") {
-      const discordId = interaction.fields.getTextInputValue("discord_id");
+      if (interaction.customId === "modal_historico") {
+        const discordId = interaction.fields.getTextInputValue("discord_id");
 
-      const registros = db.prepare(`
-        SELECT * FROM registros
-        WHERE player_id = ?
-        ORDER BY id DESC
-        LIMIT 10
-      `).all(discordId);
+        const registros = db.prepare(`
+          SELECT * FROM registros
+          WHERE player_id = ?
+          ORDER BY id DESC
+          LIMIT 10
+        `).all(discordId);
 
-      if (!registros.length) {
-        return interaction.reply({
-          content: `❌ Nenhum histórico encontrado para <@${discordId}>.`,
-          ephemeral: true
-        });
-      }
+        if (!registros.length) {
+          return interaction.reply({
+            content: `❌ Nenhum histórico encontrado para <@${discordId}>.`,
+            ephemeral: true
+          });
+        }
 
       const embed = new EmbedBuilder()
         .setColor("#ff0000")
@@ -453,26 +453,69 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.customId === "modal_remover") {
       const registroId = interaction.fields.getTextInputValue("registro_id");
-
-      const result = db.prepare(`
-        DELETE FROM registros
+    
+      const registro = db.prepare(`
+        SELECT * FROM registros
         WHERE id = ?
-      `).run(registroId);
-
-      if (result.changes === 0) {
+      `).get(registroId);
+    
+      if (!registro) {
         return interaction.reply({
           content: "❌ Registro não encontrado.",
           ephemeral: true
         });
       }
-
+    
+      const result = db.prepare(`
+        DELETE FROM registros
+        WHERE id = ?
+      `).run(registroId);
+    
+      if (registro.tipo === "Advertência") {
+        const discordId = registro.player_id;
+        const adv1 = process.env.ADV_1_ROLE_ID;
+        const adv2 = process.env.ADV_2_ROLE_ID;
+    
+        let member = null;
+    
+        try {
+          member = await interaction.guild.members.fetch(discordId);
+        } catch (error) {
+          member = null;
+        }
+    
+        if (member) {
+          const advsRestantes = db.prepare(`
+            SELECT COUNT(*) AS total FROM registros
+            WHERE player_id = ?
+            AND tipo = ?
+          `).get(discordId, "Advertência").total;
+    
+          try {
+            await member.roles.remove([adv1, adv2]);
+    
+            if (advsRestantes === 1) {
+              await member.roles.add(adv1);
+            }
+    
+            if (advsRestantes >= 2) {
+              await member.roles.add(adv2);
+            }
+          } catch (error) {
+            return interaction.reply({
+              content: "⚠️ Registro removido, mas não consegui atualizar os cargos de advertência. Verifique a hierarquia do cargo do bot.",
+              ephemeral: true
+            });
+          }
+        }
+      }
+    
       return interaction.reply({
-        content: `✅ Registro **#${registroId}** removido.`,
+        content: `✅ Registro **#${registroId}** removido e cargos atualizados.`,
         ephemeral: true
       });
     }
   }
 });
-
 registrarComandos();
 client.login(process.env.TOKEN);
